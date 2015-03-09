@@ -29,11 +29,12 @@ def speaker(lines, commands):
 	print("Speaker starting",file=dbg); dbg.flush()
 	
 	i = 0
+	paused = False
 	try:
 		while True:
 			say = None
-			if lines[i:]:
-				say = Popen(["festival","--tts"], stdin=PIPE, stdout=PIPE, stderr=None)
+			if not paused and lines[i:]:
+				say = Popen(["festival","--tts"], stdin=PIPE, stdout=PIPE, stderr=PIPE)
 				with os.fdopen(say.stdin.fileno(), "w") as textual:
 					print(lines[i], file=textual)
 					#festival doesn't actually run until it has all the input
@@ -84,6 +85,8 @@ def speaker(lines, commands):
 					elif cmd == "next":
 						i += 1
 						if i >= len(lines): i = len(lines)
+					elif cmd == "pause":
+						paused = not paused
 				elif say is not None and say.stdout in fread:
 					i += 1
 					if i >= len(lines): i = len(lines)					
@@ -124,6 +127,8 @@ def UI(commands):
 				cmd = "prev"
 			elif key in [curses.KEY_RIGHT, ord('L'), ord('l')]:
 				cmd = "next"
+			elif key in [ord(' ')]:
+				cmd = "pause"
 			else:
 				continue
 			
