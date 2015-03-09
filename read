@@ -1,0 +1,174 @@
+#!/usr/bin/python
+"""
+Read sentences step by step with a simple ncurses UI
+"""
+
+import socket
+import sys, os
+import curses
+from subprocess import *
+from select import select
+import pickle, base64
+from subprocess import *
+import psutil, signal
+
+lines = []
+
+
+def speaker(lines, commands):
+	"""
+	
+	"""
+	# spawns a subprocess to run 'say'
+	# waits for input from pipe 'commands' or for 'say' to exit
+	# whichever comes first
+	# if say comes first, reads the next line
+	# if commands comes first, perform it (things like jumping forward and backward through the text)
+	
+	dbg = open("speaker.log", "a")
+	print("Speaker starting",file=dbg); dbg.flush()
+	
+	i = 0
+	try:
+		while True:
+			say = None
+			if lines[i:]:
+				say = Popen(["festival","--tts"], stdin=PIPE, stdout=PIPE, stderr=None)
+				with os.fdopen(say.stdin.fileno(), "w") as textual:
+					print(lines[i], file=textual)
+					#festival doesn't actually run until it has all the input
+			try:
+				fread, _, _ = select([commands] + ([say.stdout] if say else []), [], [])
+				if commands in fread:
+					#print("read this from select():", fread, file=dbg); dbg.flush()
+					#cmd = fread.read()
+					
+					cmd = commands.readline()
+					if not cmd:
+						print("parent exited. quitting.", file=dbg); dbg.flush()
+						break
+					
+					if say is not None:
+						#say.kill()
+						#festival forks a bunch of processes in unix style (yay) but doesn't clean up after them (boo)
+						#so we do it for it
+
+						print("killing festival and all it stands for %s (%s)" %( say,say.pid), file=dbg); dbg.flush()
+						children = psutil.Process(say.pid).get_children(recursive=True)
+						for c in children:
+							try:
+								print("kill children process %s (%s)" %( c,c.pid), file=dbg); dbg.flush()
+								c.kill()
+							except KeyboardInterrupt:
+								raise
+							except: pass
+						for c in children:
+							c.wait()
+						# wait on say *after* killing its children (or else it gets reaped and psutil can't find it)
+						say.kill()
+						say.wait()
+
+						say = None
+					
+					assert cmd.endswith("\n"); cmd=cmd[:-1]
+					cmd = cmd.encode("ascii") #str --> bytes
+					#print("read this from readline() %r (%s)" %( durp,type(durp)), file=dbg); dbg.flush()
+					cmd = base64.b64decode(cmd)
+					#print("read this from base64():", durp,type(durp), file=dbg); dbg.flush()
+					cmd = pickle.loads(cmd)
+					#print("read this from pickle():", durp,type(durp), file=dbg); dbg.flush()
+					print(cmd, file=dbg, flush=True)
+					if cmd == "prev":
+						i -= 1
+						if i < 0: i = 0
+					elif cmd == "next":
+						i += 1
+						if i >= len(lines): i = len(lines)
+				elif say is not None and say.stdout in fread:
+					i += 1
+					if i >= len(lines): i = len(lines)					
+					continue
+					
+					
+			except Exception as exc:
+				print("Dying:",type(exc),exc, file=dbg); dbg.flush()
+				break
+	except Exception as exc:
+		print("Dying2:", type(exc),exc, file=dbg); dbg.flush()
+	finally:
+		if say is not None:
+			say.kill()
+			say.wait()
+		print("Speaker quitting",file=dbg); dbg.flush()
+		dbg.close()
+	
+	
+
+def UI(commands):
+	screen = curses.initscr()
+	curses.noecho()
+	curses.cbreak()
+	screen.keypad(True)
+	curses.start_color()
+	curses.init_pair(1, curses.COLOR_RED, curses.COLOR_WHITE)
+	screen.addstr("Reading input", curses.color_pair(1))
+	
+	dbg = open("UI.log","a")
+	print("UI starting",file=dbg); dbg.flush()
+	try:
+		while True: #event loop
+			screen.refresh()
+			key = screen.getch()
+			
+			if key in [curses.KEY_LEFT, ord('H'), ord('h')]:
+				cmd = "prev"
+			elif key in [curses.KEY_RIGHT, ord('L'), ord('l')]:
+				cmd = "next"
+			else:
+				continue
+			
+			#print("read '%s' from ncurses"%(cmd,), file=dbg); dbg.flush()
+			cmd = pickle.dumps(cmd)
+			#print("picked: %r (%s):" % (cmd,type(cmd)), file=dbg); dbg.flush()
+			cmd = base64.b64encode(cmd).decode("ascii")
+			#print("sending this to child() %r (%s):" % (cmd,type(cmd)), file=dbg); dbg.flush()
+			#commands.write(cmd); commands.flush()
+			
+			# send the commands over1
+			# ack. this isn't noticing when its child dies..
+			print(cmd, file=commands); commands.flush()
+	finally:
+		screen.keypad(False)
+		curses.nocbreak()
+		curses.echo()
+		curses.endwin()
+		
+		# TODO: tell our child to die too
+		print("UI quitting",file=dbg); dbg.flush()
+
+
+# you can
+if __name__ == '__main__':
+	if sys.argv[1:]: #TODO: cat all the files together
+		fin = open(sys.argv[1])
+	else:
+		fin = sys.stdin
+	sentences = fin.read() #TODO: read lazily (but remember every line we read so we can go back if requested)
+	sentences = sentences.split(".")
+	
+	# TODO: use a socket instead of a pipe
+	
+	# make a worker thread via fork
+	# communicate to it via a (one way) pipe
+	# fuck it. pipes are too fiddly.
+	#commands = os.pipe()
+	commands = socket.socketpair()
+	if os.fork():
+		#os.close(commands[0]) #close the unused read_end
+		#UI(os.fdopen(commands[1], "wb"))
+		UI(commands[1].makefile("w"))
+	else:
+		#os.close(commands[1]) #close the unused write_end
+		speaker(sentences,
+			#os.fdopen(commands[0], "rb"))
+			commands[0].makefile("r"))
